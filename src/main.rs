@@ -1,10 +1,12 @@
 use clap::{Parser, CommandFactory};
-use std::process::Command;
 mod commands;
+mod systemd;
 
 use commands::{Cli, Commands, VersionAction, ServiceAction};
+use systemd::SystemdManager;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
@@ -12,7 +14,7 @@ fn main() {
             handle_version(action);
         }
         Some(Commands::Service { action }) => {
-            handle_service(action);
+            handle_service(action).await;
         }
         None => {
             // Print help when no command is provided
@@ -43,42 +45,38 @@ fn handle_version(action: &Option<VersionAction>) {
     }
 }
 
-fn handle_service(action: &Option<ServiceAction>) {
+async fn handle_service(action: &Option<ServiceAction>) {
+    let systemd = match SystemdManager::new().await {
+        Ok(manager) => manager,
+        Err(e) => {
+            eprintln!("Failed to connect to systemd: {}", e);
+            return;
+        }
+    };
+
     match action {
         Some(ServiceAction::Start) => {
-            let output = sudo_systemctl_x_cloudflared("start".into());
-            println!("{}", String::from_utf8_lossy(&output.stdout));
+            if let Err(e) = systemd.start_service("cloudflared").await {
+                eprintln!("Failed to start service: {}", e);
+            }
         }
         Some(ServiceAction::Stop) => {
-            let output = sudo_systemctl_x_cloudflared("stop".into());
-            println!("{}", String::from_utf8_lossy(&output.stdout));
+            if let Err(e) = systemd.stop_service("cloudflared").await {
+                eprintln!("Failed to stop service: {}", e);
+            }
         }
         Some(ServiceAction::Status) => {
-            let output = systemctl_status_cloudflared();
-            println!("{}", String::from_utf8_lossy(&output.stdout));
+            match systemd.get_service_status("cloudflared").await {
+                Ok(status) => println!("{}", status),
+                Err(e) => eprintln!("Failed to get service status: {}", e),
+            }
         }
         None => {
             // Default behavior for `cvm service` - show status
-            let output = systemctl_status_cloudflared();
-            println!("{}", String::from_utf8_lossy(&output.stdout));
+            match systemd.get_service_status("cloudflared").await {
+                Ok(status) => println!("{}", status),
+                Err(e) => eprintln!("Failed to get service status: {}", e),
+            }
         }
     }
-}
-
-fn sudo_systemctl_x_cloudflared(command: String) -> std::process::Output {
-    println!("Executing sudo systemctl {} cloudflared", command);
-    let output = Command::new("sudo")
-        .args(&["systemctl", &command, "cloudflared"])
-        .output();
-
-    output.unwrap()
-}
-
-fn systemctl_status_cloudflared() -> std::process::Output {
-    println!("Checking cloudflared service status...");
-    let output = Command::new("systemctl")
-        .args(&["status", "cloudflared"])
-        .output();
-
-    output.unwrap()
 }
